@@ -408,9 +408,17 @@ enum SVGAURLSessionTestHooks {
 }
 
 /// 下载 SVGA 文件并报告进度的 URLSession 代理。
-private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let maximumSize: Int
     private let progressHandler: SVGADownloadProgressHandler?
+    private let delegateQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.name = "com.svga.player.download"
+        return queue
+    }()
+
+    // All mutable state is confined to delegateQueue, including setup and cancellation.
     private var data = Data()
     private var expectedContentLength: Int64 = NSURLSessionTransferSizeUnknown
     private var continuation: CheckedContinuation<Data, Error>?
@@ -425,27 +433,33 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
     static func download(
         request: URLRequest,
         maximumSize: Int,
-        progressHandler: SVGADownloadProgressHandler?
+        progressHandler: SVGADownloadProgressHandler?,
+        configuration: URLSessionConfiguration? = nil
     ) async throws -> Data {
         let downloader = SVGADataDownloader(maximumSize: maximumSize, progressHandler: progressHandler)
-        return try await downloader.download(request: request)
+        return try await downloader.download(request: request, configuration: configuration)
     }
 
-    private func download(request: URLRequest) async throws -> Data {
-        try await withTaskCancellationHandler {
+    private func download(request: URLRequest, configuration suppliedConfiguration: URLSessionConfiguration?) async throws -> Data {
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-                let configuration = URLSessionConfiguration.default
-                configuration.requestCachePolicy = request.cachePolicy
-                if let protocolClasses = SVGAURLSessionTestHooks.protocolClasses {
-                    configuration.protocolClasses = protocolClasses + (configuration.protocolClasses ?? [])
+                delegateQueue.addOperation {
+                    // Cancellation may have completed before the continuation was installed.
+                    guard !self.isCompleted else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    self.continuation = continuation
+                    let configuration = suppliedConfiguration ?? URLSessionConfiguration.default
+                    configuration.requestCachePolicy = request.cachePolicy
+                    if suppliedConfiguration == nil, let protocolClasses = SVGAURLSessionTestHooks.protocolClasses {
+                        configuration.protocolClasses = protocolClasses + (configuration.protocolClasses ?? [])
+                    }
+                    let session = URLSession(configuration: configuration, delegate: self, delegateQueue: self.delegateQueue)
+                    self.session = session
+                    session.dataTask(with: request).resume()
                 }
-                let queue = OperationQueue()
-                queue.maxConcurrentOperationCount = 1
-                queue.name = "com.svga.player.download"
-                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
-                self.session = session
-                session.dataTask(with: request).resume()
             }
         } onCancel: {
             self.cancel()
@@ -453,8 +467,9 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
     }
 
     private func cancel() {
-        session?.invalidateAndCancel()
-        complete(.failure(CancellationError()))
+        delegateQueue.addOperation {
+            self.complete(.failure(CancellationError()))
+        }
     }
 
     func urlSession(
@@ -463,6 +478,10 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
+        guard !isCompleted else {
+            completionHandler(.cancel)
+            return
+        }
         expectedContentLength = response.expectedContentLength
         if expectedContentLength > Int64(maximumSize) {
             complete(.failure(SVGAParserError.fileTooLarge))
@@ -474,6 +493,7 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive receivedData: Data) {
+        guard !isCompleted else { return }
         data.append(receivedData)
         guard data.count <= maximumSize else {
             complete(.failure(SVGAParserError.fileTooLarge))
@@ -484,6 +504,7 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !isCompleted else { return }
         if let error {
             complete(.failure(error))
             return
@@ -499,7 +520,7 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
             return
         }
         guard expectedContentLength > 0 else {
-            progressHandler(receivedBytes > 0 ? 0.0 : 0.0)
+            progressHandler(0.0)
             return
         }
         let progress = min(1.0, max(0.0, Double(receivedBytes) / Double(expectedContentLength)))
@@ -509,14 +530,20 @@ private final class SVGADataDownloader: NSObject, URLSessionDataDelegate, @unche
     private func complete(_ result: Result<Data, Error>) {
         guard !isCompleted else { return }
         isCompleted = true
-        session?.finishTasksAndInvalidate()
-        session = nil
+
+        let session = self.session
+        let continuation = self.continuation
+        self.session = nil
+        self.continuation = nil
+        data = Data()
+
         switch result {
         case .success(let data):
+            session?.finishTasksAndInvalidate()
             continuation?.resume(returning: data)
         case .failure(let error):
+            session?.invalidateAndCancel()
             continuation?.resume(throwing: error)
         }
-        continuation = nil
     }
 }

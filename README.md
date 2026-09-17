@@ -6,9 +6,9 @@ Supports both **Proto 2.x** and **JSON 1.x** SVGA formats, with audio playback, 
 
 ## Requirements
 
-- iOS 14.0+
-- Swift 6.0+
-- Xcode 16+
+- iOS 15.0+
+- Swift 6.3+ toolchain (Swift 6 language mode)
+- Xcode 26.4+
 
 ## Installation
 
@@ -21,6 +21,45 @@ dependencies: [
 ```
 
 Or in Xcode: **File > Add Package Dependencies**, enter the repository URL.
+
+## Development
+
+Open **SVGAView.xcworkspace** at the repository root. The workspace contains the
+local Swift package and the Examples app, with two shared schemes:
+
+- **SVGAView** — build the framework and run its unit tests.
+- **Examples** — run the demo app and its unit and UI tests.
+
+The framework's targets and dependencies remain defined in `Package.swift`.
+Dependencies are SwiftProtobuf 1.38.1+ (including its code-generation plugin)
+and ZIPFoundation 0.9.20+.
+Both the package and workspace lockfiles are committed; keep their dependency
+versions aligned when intentionally updating dependencies.
+
+To build from the command line:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+open SVGAView.xcworkspace
+
+xcodebuild -workspace SVGAView.xcworkspace -scheme SVGAView \
+  -configuration Debug -destination 'generic/platform=iOS Simulator' build
+xcodebuild -workspace SVGAView.xcworkspace -scheme Examples \
+  -configuration Release -destination 'generic/platform=iOS Simulator' build
+```
+
+List available simulators with `xcrun simctl list devices available`, then replace
+`SIMULATOR_UDID` below with an available iPhone simulator's identifier:
+
+```sh
+xcodebuild -workspace SVGAView.xcworkspace -scheme SVGAView \
+  -destination 'platform=iOS Simulator,id=SIMULATOR_UDID' test
+xcodebuild -workspace SVGAView.xcworkspace -scheme Examples \
+  -destination 'platform=iOS Simulator,id=SIMULATOR_UDID' test
+```
+
+All configurations target iOS 15.0. Validate minimum-OS runtime behavior on an
+iOS 15 device or simulator in addition to building with that deployment target.
 
 ## Quick Start
 

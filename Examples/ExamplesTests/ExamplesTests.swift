@@ -9,6 +9,7 @@ import Foundation
 import Testing
 @testable import Examples
 
+@MainActor
 struct ExamplesTests {
 
     @Test func decodesGiftEffectsFromJSON() throws {
