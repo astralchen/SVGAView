@@ -365,8 +365,9 @@ private extension ViewController {
         // clear() 只清空图层；先停止旧播放的帧驱动及加载，避免旧帧隐藏新下载状态。
         // clearsAfterStop 为 true，stop() 同时清除旧画面。
         playerView.stop()
-        showState("准备下载...", state: .loading)
-        showDownloadProgress(0)
+        // 加载期间先保持舞台提示隐藏，仅在实际下载事件到达后显示进度。
+        hideState()
+        stageState = .loading
         playerView.play(remoteURL: effect.url)
     }
 
@@ -434,7 +435,7 @@ private extension ViewController {
     func showDownloadProgress(_ progress: Double) {
         guard stageState == .loading else { return }
         let boundedProgress = min(1, max(0, progress))
-        stateLabel.text = boundedProgress >= 1 ? "下载完成，准备播放..." : "下载中..."
+        showState(boundedProgress >= 1 ? "下载完成，准备播放..." : "下载中...", state: .loading)
         downloadProgressView.setProgress(Float(boundedProgress), animated: boundedProgress > 0)
         downloadProgressLabel.text = DownloadProgressFormatter.percentText(for: boundedProgress)
         downloadProgressStack.isHidden = false

@@ -168,18 +168,18 @@ final class SVGASharedRequests<Value: Sendable>: @unchecked Sendable {
 
     /// 在锁内确定订阅终态并接续下一实例，将回调和 continuation 恢复留给锁外。
     private func takeCompleted(_ result: Result<Value, Error>, key: String, id: UUID)
-        -> [(Subscriber, CheckedContinuation<Value, Error>, Result<Value, Error>)] {
+        -> [(Subscriber, CheckedContinuation<Value, Error>, Result<Value, Error>, Bool)] {
         lock.lock()
         defer { lock.unlock() }
         // 同键可能已登记新实例；旧完成回调只能结束自己的实例。
         guard let entry = entries[key], entry.id == id else { return [] }
         entries[key] = nil
-        let completed = entry.subscribers.compactMap { subscriber -> (Subscriber, CheckedContinuation<Value, Error>, Result<Value, Error>)? in
+        let completed = entry.subscribers.compactMap { subscriber -> (Subscriber, CheckedContinuation<Value, Error>, Result<Value, Error>, Bool)? in
             let terminal: Result<Value, Error> = subscriber.cancelled ? .failure(CancellationError()) : result
             subscriber.result = terminal
             guard let continuation = subscriber.continuation else { return nil }
             subscriber.continuation = nil
-            return (subscriber, continuation, terminal)
+            return (subscriber, continuation, terminal, entry.progress != nil)
         }
         if !entry.next.isEmpty { start(key: key, subscribers: entry.next) }
         return completed
@@ -187,8 +187,9 @@ final class SVGASharedRequests<Value: Sendable>: @unchecked Sendable {
 
     // 终态先于最终进度回调确定，回调中发生的取消不能反向改写已确定的成功。
     private func finish(_ result: Result<Value, Error>, key: String, id: UUID) async {
-        for (subscriber, continuation, terminal) in takeCompleted(result, key: key, id: id) {
-            if case .success = terminal { await report(1, to: subscriber, completed: true) }
+        for (subscriber, continuation, terminal, hadProgress) in takeCompleted(result, key: key, id: id) {
+            // 缓存读取没有下载进度，不能仅因加载成功而合成下载完成事件。
+            if case .success = terminal, hadProgress { await report(1, to: subscriber, completed: true) }
             continuation.resume(with: terminal)
         }
     }

@@ -178,13 +178,42 @@ func preloadRequestCachesRemoteDataWithoutAView() async throws {
     }
 
     let view = SVGAView()
+    view.onEvent = { event in
+        if case .downloadProgress = event { Issue.record("Cached view load reported download progress") }
+    }
     try await view.load(.request(request))
+    let cachedRecorder = ProgressRecorder()
+    try await SVGAView.preload(.request(request)) { cachedRecorder.record($0) }
+    #expect(cachedRecorder.values.isEmpty)
 
     let values = recorder.values
     #expect(ChunkedSVGAURLProtocol.requestCount(for: preloadURL) == 1)
     #expect(view.state == .ready)
     #expect(values.contains { $0 > 0 && $0 < 1 }, "expected an intermediate progress value, got \(values)")
     #expect(values.last == 1.0, "expected final progress to be 1.0, got \(values)")
+}
+
+@MainActor
+@Test
+func localSourcesDoNotReportDownloadProgress() async throws {
+    let fileURL = try #require(Bundle.module.url(forResource: "banner", withExtension: "svga"))
+    let data = try Data(contentsOf: fileURL)
+    let sources: [SVGAViewSource] = [
+        .named("banner", bundle: .module),
+        .fileURL(fileURL),
+        .data(data, cacheKey: UUID().uuidString)
+    ]
+    for source in sources {
+        let recorder = ProgressRecorder()
+        try await SVGAView.preload(source) { recorder.record($0) }
+        #expect(recorder.values.isEmpty)
+        let view = SVGAView()
+        view.onEvent = { event in
+            if case .downloadProgress = event { Issue.record("Local source reported download progress") }
+        }
+        try await view.load(source)
+        #expect(view.state == .ready)
+    }
 }
 
 @MainActor

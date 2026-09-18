@@ -74,6 +74,8 @@ actor SVGAParser {
             progressHandler?(value)
         }) { lease, progress in
             if let cached = try await self.cachedEntity(key: key, lease: lease) { return cached }
+            await progress(0)
+            try lease.checkCancellation()
             let data = try await SVGADataDownloader.download(
                 request: request, maximumSize: maximumSize,
                 progressHandler: { value in Task { await progress(value) } },

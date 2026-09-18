@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import SVGAView
 
@@ -64,7 +65,7 @@ struct SVGASharedCancellationTests {
         await cancelled.wait()
         let second = Task {
             try await requests.value(for: "same", progress: { value, active in
-                if active() { #expect(value == 1) }
+                if active() { Issue.record("New work without download received progress: \(value)") }
             }) { _, _ in await nextStarted.open(); return 2 }
         }
         #expect(await nextStarted.isOpen == false)
@@ -91,14 +92,22 @@ struct SVGASharedCancellationTests {
         let requests = SVGASharedRequests<Int>()
         let completing = Gate(), release = Gate()
         let task = Task {
-            try await requests.value(for: "done", progress: { _, active in
-                if active() { await completing.open(); await release.wait() }
-            }) { _, _ in 7 }
+            try await requests.value(for: "done", progress: { value, active in
+                if active(), value == 1 { await completing.open(); await release.wait() }
+            }) { _, progress in await progress(0); return 7 }
         }
         await completing.wait()
         task.cancel()
         await release.open()
         #expect(try await task.value == 7)
+    }
+
+    @Test func successfulWorkWithoutDownloadDoesNotReportProgress() async throws {
+        let requests = SVGASharedRequests<Int>()
+        let value = try await requests.value(for: "cached", progress: { _, _ in
+            Issue.record("Work without download must not report download progress")
+        }) { _, _ in 42 }
+        #expect(value == 42)
     }
 }
 
@@ -159,6 +168,28 @@ final class SVGACancellationURLProtocol: URLProtocol, @unchecked Sendable {
 
 @Suite(.serialized)
 struct SVGANetworkCancellationTests {
+    @Test func diskCacheHitDoesNotReportDownloadProgress() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SVGACancellationURLProtocol.self]
+        let parser = SVGAParser(configuration: configuration, cacheDirectory: directory)
+        let control = SVGACancellationURLProtocol.Control(payload: try payload())
+        let url = SVGACancellationURLProtocol.install(control)
+        let seedKey = UUID().uuidString
+        _ = try await parser.parse(data: control.payload, cacheKey: seedKey)
+        let remoteKey = SHA256.hash(data: Data(url.absoluteString.utf8))
+            .map { String(format: "%02X", $0) }.joined()
+        // 为新 URL 仅准备磁盘缓存，确保没有同键内存实体可复用。
+        try FileManager.default.copyItem(at: directory.appendingPathComponent(seedKey),
+                                         to: directory.appendingPathComponent(remoteKey))
+        let entity = try await parser.parse(url: url) { _ in
+            Issue.record("Disk cache hit must not report download progress")
+        }
+        #expect(entity.frames > 0)
+        #expect(control.counts.0 == 0)
+    }
+
     private func parser() -> SVGAParser {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SVGACancellationURLProtocol.self]
@@ -193,7 +224,9 @@ struct SVGANetworkCancellationTests {
             Issue.record("Successful parse missing cache"); return
         }
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let cached = try await parser.parse(url: url)
+        let cached = try await parser.parse(url: url) { _ in
+            Issue.record("Cache hit must not report download progress")
+        }
         #expect(cached === entity)
         let precancelled = Task {
             withUnsafeCurrentTask { $0?.cancel() }

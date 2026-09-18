@@ -7,13 +7,77 @@ import XCTest
 /// 使用实际示例页和播放器验证下载与播放状态 UI，响应由事件门控，不依赖公网速度。
 final class DownloadProgressTests: XCTestCase {
     @MainActor
+    func testCachedReplayNeverShowsDownloadUI() async throws {
+        let h = try makeHarness()
+        defer { h.close() }
+        try await finishFirst(h)
+        let appHandler = h.player.onEvent
+        h.player.onEvent = { event in
+            if case .downloadProgress = event { XCTFail("缓存重播不能发送下载事件") }
+            appHandler?(event)
+            self.assertDownloadUIHidden(h)
+        }
+
+        try button("重播", in: h.controller).sendActions(for: .touchUpInside)
+        assertDownloadUIHidden(h)
+        capture("缓存重播点击后无下载状态", harness: h)
+        try await waitUntil("缓存重播完成") { h.player.state == .playing && h.progressStack.isHidden }
+        XCTAssertEqual(h.controls[0].starts, 1, "已下载资源不能再次请求网络")
+    }
+
+    @MainActor
+    func testSelectingCachedGiftDuringAnotherDownloadNeverShowsDownloadUI() async throws {
+        let h = try makeHarness()
+        defer { h.close() }
+        try await finishFirst(h)
+        h.select(1)
+        try await waitUntil("另一份礼物下载至一半") { h.progress.progress > 0 }
+        XCTAssertEqual(h.progress.progress, 0.5, accuracy: 0.01)
+        XCTAssertFalse(h.progressStack.isHidden)
+
+        // stop() 的同步事件发生在旧 UI 清理前，从新请求进入 loading 后开始检查。
+        let appHandler = h.player.onEvent
+        var selectedCachedGift = false
+        h.player.onEvent = { event in
+            if case .stateChanged(.loading) = event { selectedCachedGift = true }
+            if selectedCachedGift, case .downloadProgress = event { XCTFail("切回缓存不能发送下载事件") }
+            appHandler?(event)
+            if selectedCachedGift { self.assertDownloadUIHidden(h) }
+        }
+        h.select(0)
+        assertDownloadUIHidden(h)
+        capture("下载中切回已缓存礼物无下载状态", harness: h)
+        try await waitUntil("缓存礼物播放且旧下载取消") {
+            h.player.state == .playing && h.progressStack.isHidden && h.controls[1].stops >= 1
+        }
+        XCTAssertTrue(selectedCachedGift)
+        XCTAssertEqual(h.controls[0].starts, 1)
+    }
+
+    @MainActor
+    private func assertDownloadUIHidden(_ h: DownloadProgressHarness,
+                                      file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(h.progressStack.isHidden, "缓存加载全程不能显示下载进度条", file: file, line: line)
+        let loadingLabels = allViews(h.controller.view).compactMap { $0 as? UILabel }.filter {
+            !$0.isHidden && (($0.text?.contains("下载") ?? false) || ($0.text?.contains("准备播放") ?? false))
+        }
+        // 礼物标题本身可以包含“下载”，这里只检查舞台内的状态标签。
+        XCTAssertFalse(loadingLabels.contains { $0.superview === h.progressStack.superview },
+                       "缓存加载全程不能显示下载或准备播放文案", file: file, line: line)
+    }
+
+    @MainActor
     func testColdDownloadIgnoresStaleFrameUntilPlaybackStarts() async throws {
         let harness = try makeHarness()
         defer { harness.close() }
+        assertDownloadUIHidden(harness)
         try await waitUntil("新资源下载至 50%") { harness.progress.progress > 0 }
         XCTAssertEqual(harness.player.state, .loading)
         XCTAssertEqual(harness.progress.progress, 0.5, accuracy: 0.01)
         XCTAssertFalse(harness.progressStack.isHidden)
+        XCTAssertTrue(allViews(harness.controller.view).compactMap { $0 as? UILabel }.contains {
+            !$0.isHidden && $0.text == "下载中..."
+        })
 
         // 即使外部收到迟到帧，仍在 loading 的新请求也不能隐藏进度。
         harness.player.onEvent?(.frameChanged(0))

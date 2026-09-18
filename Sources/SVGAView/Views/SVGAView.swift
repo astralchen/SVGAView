@@ -4,6 +4,7 @@ import UIKit
 ///
 /// 回调参数位于 `0.0...1.0` 范围内，不保证在主 Actor 执行。下载进度不包含
 /// 解压、解析和缓存提交；需要资源就绪时，应等待预加载方法返回。
+/// 缓存命中及本地来源不触发下载进度回调。
 public typealias SVGAViewPreloadProgressHandler = @Sendable (_ progress: Double) -> Void
 
 // MARK: - 动态内容配置
@@ -168,7 +169,7 @@ public enum SVGAViewEvent: Equatable, Sendable {
     case frameChanged(Int)
     /// 播放进度已变化，范围为 `0.0...1.0`。
     case percentageChanged(CGFloat)
-    /// 网络下载进度已变化，范围为 `0.0...1.0`。
+    /// 网络下载进度已变化，范围为 `0.0...1.0`。缓存命中及本地来源不发送此事件。
     case downloadProgress(Double)
     /// 动画加载失败。
     case loadFailed(SVGAViewError)
@@ -220,15 +221,6 @@ private extension SVGAViewSource {
         case .named, .fileURL:
             return true
         case .remoteURL, .request, .data:
-            return false
-        }
-    }
-
-    var reportsDownloadProgress: Bool {
-        switch self {
-        case .remoteURL, .request:
-            return true
-        case .named, .fileURL, .data:
             return false
         }
     }
@@ -563,7 +555,7 @@ open class SVGAView: UIView {
     ///
     /// - Parameters:
     ///   - source: 动画数据来源。
-    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。非网络来源成功后回调 `1`。
+    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。仅在实际下载时回调；缓存命中及本地来源不回调。
     /// - Throws: 取消时抛出 `CancellationError`；其他加载、解压或解析失败以 `SVGAViewError` 表达。
     @concurrent public nonisolated static func preload(
         _ source: SVGAViewSource,
@@ -572,9 +564,6 @@ open class SVGAView: UIView {
         try Task.checkCancellation()
         do {
             _ = try await fetchEntity(for: source, progressHandler: progressHandler)
-            if !source.reportsDownloadProgress {
-                progressHandler?(1.0)
-            }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -589,7 +578,7 @@ open class SVGAView: UIView {
     /// - Parameters:
     ///   - name: 资源名，可省略 `.svga` 扩展名。
     ///   - bundle: 资源所在的 bundle。默认值为 `nil`，使用 `Bundle.main`。
-    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。非网络来源成功后回调 `1`。
+    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。仅在实际下载时回调；缓存命中及本地来源不回调。
     /// - Throws: 取消时抛出 `CancellationError`；其他加载、解压或解析失败以 `SVGAViewError` 表达。
     @concurrent public nonisolated static func preload(
         named name: String,
@@ -605,7 +594,7 @@ open class SVGAView: UIView {
     ///
     /// - Parameters:
     ///   - url: SVGA 文件的 HTTP 或 HTTPS URL。
-    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。非网络来源成功后回调 `1`。
+    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。仅在实际下载时回调；缓存命中及本地来源不回调。
     /// - Throws: 取消时抛出 `CancellationError`；其他加载、解压或解析失败以 `SVGAViewError` 表达。
     @concurrent public nonisolated static func preload(
         remoteURL url: URL,
@@ -620,7 +609,7 @@ open class SVGAView: UIView {
     ///
     /// - Parameters:
     ///   - request: 用于下载 SVGA 文件的请求，URL 必须使用 HTTP 或 HTTPS。
-    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。非网络来源成功后回调 `1`。
+    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。仅在实际下载时回调；缓存命中及本地来源不回调。
     /// - Throws: 取消时抛出 `CancellationError`；其他加载、解压或解析失败以 `SVGAViewError` 表达。
     @concurrent public nonisolated static func preload(
         request: URLRequest,
@@ -635,7 +624,7 @@ open class SVGAView: UIView {
     ///
     /// - Parameters:
     ///   - fileURL: 指向 SVGA 文件的本地文件 URL。
-    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。非网络来源成功后回调 `1`。
+    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。仅在实际下载时回调；缓存命中及本地来源不回调。
     /// - Throws: 取消时抛出 `CancellationError`；其他加载、解压或解析失败以 `SVGAViewError` 表达。
     @concurrent public nonisolated static func preload(
         fileURL: URL,
@@ -651,7 +640,7 @@ open class SVGAView: UIView {
     /// - Parameters:
     ///   - data: SVGA 文件数据。
     ///   - cacheKey: 用于共享解析及读写缓存的稳定键；不同资源应使用不同键。
-    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。非网络来源成功后回调 `1`。
+    ///   - progressHandler: 可选的下载进度回调，取值范围为 `0...1`，不保证在主 Actor 执行。仅在实际下载时回调；缓存命中及本地来源不回调。
     /// - Throws: 取消时抛出 `CancellationError`；其他加载、解压或解析失败以 `SVGAViewError` 表达。
     @concurrent public nonisolated static func preload(
         data: Data,
