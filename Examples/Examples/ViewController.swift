@@ -14,6 +14,7 @@ class ViewController: UIViewController {
         case hidden
         case loading
         case empty
+        case stopped
         case error
     }
 
@@ -50,12 +51,30 @@ class ViewController: UIViewController {
         return collectionView
     }()
 
+    private let giftEffectsLoader: () throws -> [GiftEffect]
+
+    /// 创建礼物演示页，并指定礼物目录的加载方式。
+    ///
+    /// - Parameter giftEffectsLoader: 默认读取应用中的礼物目录；测试可提供独立资源地址。
+    init(giftEffectsLoader: @escaping () throws -> [GiftEffect] = { try GiftEffectsDataSource.load() }) {
+        self.giftEffectsLoader = giftEffectsLoader
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        giftEffectsLoader = { try GiftEffectsDataSource.load() }
+        super.init(coder: coder)
+    }
+
     private var effects: [GiftEffect] = []
     private var filteredEffects: [GiftEffect] = []
     private var selectedEffect: GiftEffect?
     private var stageState: StageState = .hidden
     private var isLooping = true
-    private var isPaused = false
+    /// 当前选中礼物是否已成功加载到播放器。
+    ///
+    /// 播放器停止或替换加载失败后可能保留上一份实体，因此不能仅凭播放状态允许继续。
+    private var hasPlayableSelection = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -66,7 +85,15 @@ class ViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        // 先撤销播放资格，再停止播放器，避免同步状态事件重新启用旧资源的控制按钮。
+        hasPlayableSelection = false
         playerView.stop()
+        if selectedEffect != nil {
+            showState("播放已停止\n点击重播继续", state: .stopped)
+        } else {
+            hideDownloadProgress()
+        }
+        updatePauseButton()
     }
 }
 
@@ -269,15 +296,21 @@ private extension ViewController {
         playerView.onEvent = { [weak self] event in
             switch event {
             case .frameChanged:
-                guard let self, self.stageState == .loading else { return }
+                // 加载期间的迟到帧不能代表新资源已开始播放。
+                guard let self, self.stageState == .loading,
+                      self.playerView.state == .playing else { return }
                 self.hideState()
             case .downloadProgress(let progress):
                 self?.showDownloadProgress(progress)
             case .loadFailed:
                 self?.showState("加载失败\n点击重播重试", state: .error)
-            case .finished:
-                guard let self, !self.isLooping else { return }
-                self.isPaused = true
+            case .stateChanged(let state):
+                guard let self else { return }
+                if case .failed = state { self.hasPlayableSelection = false }
+                self.updatePauseButton()
+            case .ready:
+                guard let self else { return }
+                self.hasPlayableSelection = true
                 self.updatePauseButton()
             default:
                 break
@@ -291,7 +324,7 @@ private extension ViewController {
 private extension ViewController {
     func loadGiftEffects() {
         do {
-            effects = try GiftEffectsDataSource.load()
+            effects = try giftEffectsLoader()
             filteredEffects = effects
             collectionView.reloadData()
             updateCollectionBackground()
@@ -323,15 +356,17 @@ private extension ViewController {
         selectedEffect = effect
         currentGiftLabel.text = effect.name
         sourceBadgeLabel.text = effect.sourceLabel.uppercased()
-        isPaused = false
+        hasPlayableSelection = false
         playerView.loops = isLooping ? 0 : 1
         updatePauseButton()
         updateLoopButton()
         collectionView.reloadData()
 
+        // clear() 只清空图层；先停止旧播放的帧驱动及加载，避免旧帧隐藏新下载状态。
+        // clearsAfterStop 为 true，stop() 同时清除旧画面。
+        playerView.stop()
         showState("准备下载...", state: .loading)
         showDownloadProgress(0)
-        playerView.clear()
         playerView.play(remoteURL: effect.url)
     }
 
@@ -341,16 +376,16 @@ private extension ViewController {
     }
 
     @objc func togglePause() {
-        guard selectedEffect != nil else { return }
-
-        if isPaused {
-            playerView.start()
-        } else {
+        // 即使收到已排队的按钮事件，也不能暂停尚未加载的资源或恢复上一份礼物。
+        guard canControlPlayback else { return }
+        switch playerView.state {
+        case .playing:
             playerView.pause()
+        case .ready, .paused, .stopped:
+            playerView.start()
+        case .idle, .loading, .failed:
+            break
         }
-
-        isPaused.toggle()
-        updatePauseButton()
     }
 
     @objc func toggleLoop() {
@@ -381,7 +416,7 @@ private extension ViewController {
             hideDownloadProgress()
         case .loading:
             stateLabel.textColor = UIColor.white.withAlphaComponent(0.88)
-        case .empty:
+        case .empty, .stopped:
             stateLabel.textColor = UIColor.white.withAlphaComponent(0.72)
             hideDownloadProgress()
         case .error:
@@ -412,17 +447,33 @@ private extension ViewController {
 
     func setControlsEnabled(_ enabled: Bool) {
         replayButton.isEnabled = enabled
-        pauseButton.isEnabled = enabled
         loopButton.isEnabled = enabled
         searchField.isEnabled = enabled
         collectionView.isUserInteractionEnabled = enabled
-        [replayButton, pauseButton, loopButton].forEach { $0.alpha = enabled ? 1 : 0.45 }
+        [replayButton, loopButton].forEach { $0.alpha = enabled ? 1 : 0.45 }
+        updatePauseButton()
+    }
+
+    /// 当前选中礼物是否支持暂停或继续播放。
+    var canControlPlayback: Bool {
+        guard selectedEffect != nil, hasPlayableSelection else { return false }
+        switch playerView.state {
+        case .ready, .playing, .paused, .stopped:
+            return true
+        case .idle, .loading, .failed:
+            return false
+        }
     }
 
     func updatePauseButton() {
-        let title = isPaused ? "继续" : "暂停"
-        let symbolName = isPaused ? "play.fill" : "pause.fill"
+        // 文案跟随实际播放状态，包括自动播放与自然结束，不单独维护暂停标志。
+        let enabled = canControlPlayback
+        let showsContinue = enabled && playerView.state != .playing
+        let title = showsContinue ? "继续" : "暂停"
+        let symbolName = showsContinue ? "play.fill" : "pause.fill"
         configureButton(pauseButton, title: title, symbolName: symbolName, backgroundColor: .systemIndigo)
+        pauseButton.isEnabled = enabled
+        pauseButton.alpha = enabled ? 1 : 0.45
     }
 
     func updateLoopButton() {

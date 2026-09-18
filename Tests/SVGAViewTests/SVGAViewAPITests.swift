@@ -161,7 +161,8 @@ func preloadRequestCachesRemoteDataWithoutAView() async throws {
     ChunkedSVGAURLProtocol.responseData = try Data(contentsOf: url)
     SVGAURLSessionTestHooks.protocolClasses = [
         ChunkedSVGAURLProtocol.self,
-        NeverFinishingSVGAURLProtocol.self
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
     ]
     let preloadURL = URL(string: "https://svga-progress.test/preload-\(UUID().uuidString).svga")!
     ChunkedSVGAURLProtocol.resetRequestCount(for: preloadURL)
@@ -195,7 +196,8 @@ func remoteCacheStatusCanBeQueriedWithoutLoadingAView() async throws {
     ChunkedSVGAURLProtocol.responseData = try Data(contentsOf: url)
     SVGAURLSessionTestHooks.protocolClasses = [
         ChunkedSVGAURLProtocol.self,
-        NeverFinishingSVGAURLProtocol.self
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
     ]
     let preloadURL = URL(string: "https://svga-progress.test/cache-state-\(UUID().uuidString).svga")!
     ChunkedSVGAURLProtocol.resetRequestCount(for: preloadURL)
@@ -234,7 +236,8 @@ func concurrentPreloadAndViewLoadShareInFlightRequest() async throws {
     ChunkedSVGAURLProtocol.responseData = try Data(contentsOf: url)
     SVGAURLSessionTestHooks.protocolClasses = [
         ChunkedSVGAURLProtocol.self,
-        NeverFinishingSVGAURLProtocol.self
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
     ]
     let preloadURL = URL(string: "https://svga-progress.test/single-flight-\(UUID().uuidString).svga")!
     ChunkedSVGAURLProtocol.resetRequestCount(for: preloadURL)
@@ -278,7 +281,8 @@ func concurrentPreloadAndViewLoadBothReceiveInFlightProgress() async throws {
     ChunkedSVGAURLProtocol.responseData = try Data(contentsOf: url)
     SVGAURLSessionTestHooks.protocolClasses = [
         ChunkedSVGAURLProtocol.self,
-        NeverFinishingSVGAURLProtocol.self
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
     ]
     let preloadURL = URL(string: "https://svga-progress.test/in-flight-progress-\(UUID().uuidString).svga")!
     ChunkedSVGAURLProtocol.resetRequestCount(for: preloadURL)
@@ -543,7 +547,8 @@ func playRejectsFileURLThroughRemoteURLAPI() async throws {
 func clearCancelsPendingLoad() async throws {
     SVGAURLSessionTestHooks.protocolClasses = [
         ChunkedSVGAURLProtocol.self,
-        NeverFinishingSVGAURLProtocol.self
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
     ]
 
     let view = SVGAView()
@@ -568,7 +573,8 @@ func clearCancelsPendingLoad() async throws {
 func stopCancelsPendingLoad() async throws {
     SVGAURLSessionTestHooks.protocolClasses = [
         ChunkedSVGAURLProtocol.self,
-        NeverFinishingSVGAURLProtocol.self
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
     ]
 
     let view = SVGAView()

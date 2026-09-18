@@ -39,4 +39,25 @@ actor SVGACacheStore {
     func saveWeak(key: String, entity: SVGA.VideoEntity) {
         weakCache.setObject(entity, forKey: key as NSString)
     }
+    /// 提交完整的磁盘缓存，并发布对应的内存实体。
+    ///
+    /// 租约将取消与整个同步提交过程串行化。磁盘提交失败时不会发布内存实体，
+    /// 租约已取消时两者均不执行。
+    ///
+    /// - Parameters:
+    ///   - key: 正式缓存键。
+    ///   - entity: 已完成解析且不依赖暂存路径的动画实体。
+    ///   - strong: `true` 表示写入强引用缓存；否则写入弱引用缓存。
+    ///   - lease: 当前共享工作实例的取消租约。
+    ///   - commitDisk: 将暂存内容提交至正式缓存的同步操作，不得调用用户代码或重入租约。
+    /// - Throws: 租约已取消时抛出 `CancellationError`；否则传播磁盘提交错误。
+    func publish(key: String, entity: SVGA.VideoEntity, strong: Bool, lease: SVGAWorkLease,
+                 commitDisk: @Sendable () throws -> Void) throws {
+        try lease.commit {
+            try commitDisk()
+            if strong { strongCache.setObject(entity, forKey: key as NSString) }
+            else { weakCache.setObject(entity, forKey: key as NSString) }
+        }
+    }
+
 }

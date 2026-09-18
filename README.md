@@ -313,3 +313,20 @@ Public API:
 ## License
 
 MIT
+
+### 异步取消契约（兼容性变更）
+
+`preload` 和异步 `load` 现在以原生 **`CancellationError`** 表示取消，不再向异步调用方抛出 `SVGAViewError.cancelled`。捕获取消的代码应改为：
+
+```swift
+let task = Task { try await SVGAView.preload(remoteURL: url) }
+task.cancel()
+do { try await task.value }
+catch is CancellationError { /* 此次加载需求已释放 */ }
+```
+
+同 URL 的下载和解析共享底层工作，每次调用拥有独立订阅。仍有其他订阅者时，取消的调用及时结束，其他调用继续；最后一个订阅者取消时，会停止底层下载，等待工作退出及暂存目录清理后返回。随后请求相同 URL 会等待旧实例清理，再开始新实例。解压和解析在阶段边界协作检查取消，不承诺强制中断同步 CPU 工作。
+
+每个实例先在独立暂存目录解压并解析，只有完整资源和已解析实体才会一起提交缓存。实体拥有已读取的图片和音频数据，不保留暂存路径。取消与成功以每个订阅者首先确定的终态为准，已成功的结果不会被迟到取消改写；取消后不再开始进度通知，已执行中的回调可以结束。
+
+直接 `await view.load(...)` 与 `play(...)` 共用视图请求身份管理。调用方 Task 取消、`cancelLoading()`、`clear()` 和替换加载都能释放对应需求。仍为当前请求的直接异步加载取消，会保持 `.failed(.cancelled)` / `.loadFailed(.cancelled)` 状态和事件，同时向调用方抛出 `CancellationError`；被停止或替换的旧请求不会恢复动画、改变新状态或发布迟到事件。预取消不会启动网络或改变视图。
