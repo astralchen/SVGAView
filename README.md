@@ -153,6 +153,23 @@ You can start playback explicitly from the load call:
 try await playerView.load(.named("banner"), startsPlayback: true)
 ```
 
+Download failures are exposed as `SVGAViewError.network(URLError)` by `load`,
+`preload`, the `.failed` state, and `.loadFailed` events. The original network
+error retains its code and additional information:
+
+```swift
+do {
+    try await SVGAView.preload(remoteURL: url)
+} catch SVGAViewError.network(let error) {
+    print("Network error: \(error.code), \(error.localizedDescription)")
+} catch {
+    print(error.localizedDescription)
+}
+```
+
+Task cancellation continues to throw `CancellationError`. A transport-level
+`URLError.cancelled` without task cancellation remains a `.network` error.
+
 ### Additional Play Sources
 
 ```swift

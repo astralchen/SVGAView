@@ -87,6 +87,18 @@ final class ChunkedSVGAURLProtocol: URLProtocol, @unchecked Sendable {
         Self.requestCount += 1
         Self.requestCountsByURL[url, default: 0] += 1
         Self.requestLock.unlock()
+        if url.pathComponents.contains("network-error"),
+           let code = Int(url.deletingLastPathComponent().lastPathComponent) {
+            client?.urlProtocol(self, didFailWithError: NSError(
+                domain: NSURLErrorDomain,
+                code: code,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Stubbed network failure",
+                    NSURLErrorFailingURLErrorKey: url
+                ]
+            ))
+            return
+        }
         let data = Self.responseData
         let response = HTTPURLResponse(
             url: url,

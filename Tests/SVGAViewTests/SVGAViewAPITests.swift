@@ -571,6 +571,63 @@ func playRejectsFileURLThroughRemoteURLAPI() async throws {
     #expect(failedError == .unsupportedURLScheme("file"))
 }
 
+private func networkFailureSource(code: URLError.Code, useRequest: Bool) -> (SVGAViewSource, URL) {
+    SVGAURLSessionTestHooks.protocolClasses = [
+        ChunkedSVGAURLProtocol.self,
+        NeverFinishingSVGAURLProtocol.self,
+        SVGACancellationURLProtocol.self
+    ]
+    let url = URL(string: "https://svga-progress.test/network-error/\(code.rawValue)/\(UUID().uuidString).svga")!
+    let source: SVGAViewSource = useRequest ? .request(URLRequest(url: url)) : .remoteURL(url)
+    return (source, url)
+}
+
+private func expectNetworkError(_ error: Error, code: URLError.Code, url: URL) throws -> SVGAViewError {
+    let viewError = try #require(error as? SVGAViewError)
+    guard case .network(let networkError) = viewError else {
+        Issue.record("Expected a typed network error, got \(viewError)")
+        return viewError
+    }
+    #expect(networkError.code == code)
+    #expect((networkError as NSError).domain == NSURLErrorDomain)
+    #expect((networkError as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL == url)
+    #expect(viewError.errorDescription == "Stubbed network failure")
+    return viewError
+}
+
+@Test(arguments: [URLError.Code.timedOut, .notConnectedToInternet, .networkConnectionLost, .cancelled], [false, true])
+func preloadPreservesNetworkError(code: URLError.Code, useRequest: Bool) async throws {
+    let (source, url) = networkFailureSource(code: code, useRequest: useRequest)
+    do {
+        try await SVGAView.preload(source)
+        Issue.record("Expected preload to fail with a network error")
+    } catch {
+        _ = try expectNetworkError(error, code: code, url: url)
+    }
+}
+
+@MainActor
+@Test(arguments: [URLError.Code.timedOut, .notConnectedToInternet, .networkConnectionLost, .cancelled], [false, true])
+func loadPreservesNetworkErrorInThrowStateAndEvents(code: URLError.Code, useRequest: Bool) async throws {
+    let (source, url) = networkFailureSource(code: code, useRequest: useRequest)
+    let view = SVGAView()
+    var failures: [SVGAViewError] = []
+    var failedStates: [SVGAViewError] = []
+    view.onEvent = { event in
+        if case .loadFailed(let error) = event { failures.append(error) }
+        if case .stateChanged(.failed(let error)) = event { failedStates.append(error) }
+    }
+    do {
+        try await view.load(source)
+        Issue.record("Expected load to fail with a network error")
+    } catch {
+        let expected = try expectNetworkError(error, code: code, url: url)
+        #expect(view.state == .failed(expected))
+        #expect(failures == [expected])
+        #expect(failedStates == [expected])
+    }
+}
+
 @MainActor
 @Test
 func clearCancelsPendingLoad() async throws {

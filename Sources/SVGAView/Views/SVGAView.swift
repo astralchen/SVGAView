@@ -127,6 +127,8 @@ public enum SVGAViewError: Error, Equatable, LocalizedError, Sendable {
     case invalidJSON
     /// 下载文件超过 `SVGAParser` 配置的大小限制。
     case fileTooLarge
+    /// 下载失败，保留原始网络错误的错误码和附加信息。
+    case network(URLError)
     /// 视图状态或事件表示加载已取消；异步 `load` 和 `preload` 向调用方抛出 `CancellationError`。
     case cancelled
     /// 底层错误的描述。
@@ -147,6 +149,8 @@ public enum SVGAViewError: Error, Equatable, LocalizedError, Sendable {
             return "SVGA JSON payload is invalid."
         case .fileTooLarge:
             return "SVGA file is larger than the configured download limit."
+        case .network(let error):
+            return error.localizedDescription
         case .cancelled:
             return "SVGA loading was cancelled."
         case .underlying(let message):
@@ -1297,6 +1301,9 @@ open class SVGAView: UIView {
         }
         if let viewError = error as? SVGAViewError {
             return viewError
+        }
+        if let urlError = error as? URLError {
+            return .network(urlError)
         }
         if let parserError = error as? SVGAParserError {
             switch parserError {
